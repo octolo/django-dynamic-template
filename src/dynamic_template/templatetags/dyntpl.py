@@ -105,12 +105,13 @@ class DynTplNode(template.Node):
         if ctype_kw is not None and ctype_filter is None:
             return ""
 
-        qs = DynamicTemplate.objects.select_related("content_type").prefetch_related(
+        qs = DynamicTemplate.objects.prefetch_related(
+            "content_types",
             "relation_contexts",
             "relation_contexts__content_type",
         )
         if ctype_filter is not None:
-            qs = qs.filter(content_type=ctype_filter)
+            qs = qs.filter(content_types=ctype_filter)
 
         try:
             dt = qs.get(named_id=named_id)
@@ -127,7 +128,7 @@ class DynTplNode(template.Node):
                 ct = ContentType.objects.get_for_model(bound, for_concrete_model=False)
             except (AttributeError, TypeError):
                 return ""
-            if ct != dt.content_type:
+            if not dt.content_types.filter(pk=ct.pk).exists():
                 return ""
 
         base: dict[str, object] = {}

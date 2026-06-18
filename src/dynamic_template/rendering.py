@@ -22,14 +22,14 @@ def render_dynamic_template_fragment(
     """
     Evaluate ``dt.template`` with optional ``object`` (*bound*), relation contexts, and context merges.
 
-    Raises ``ValueError`` if *bound* is not compatible with ``dt.content_type``.
+    Raises ``ValueError`` if *bound* is not compatible with any of ``dt.content_types``.
     """
     if bound is not None:
         if not hasattr(bound, "_meta"):
             raise ValueError("bound must be a model instance")
         ct = ContentType.objects.get_for_model(bound, for_concrete_model=False)
-        if ct != dt.content_type:
-            raise ValueError("bound model does not match template content type")
+        if not dt.content_types.filter(pk=ct.pk).exists():
+            raise ValueError("bound model does not match any template content type")
 
     engine = engines["django"]
     tpl = engine.from_string(dt.template)

@@ -13,7 +13,7 @@ from django.db import transaction
 
 from dynamic_template.models import DynamicRelationContext, DynamicTemplate
 
-EXPORT_FORMAT_VERSION = 1
+EXPORT_FORMAT_VERSION = 2
 
 
 def _split_ct(label: str) -> tuple[str, str]:
@@ -49,7 +49,9 @@ def serialize_template(dt: DynamicTemplate) -> dict[str, Any]:
     data: dict[str, Any] = {
         "label": dt.label,
         "named_id": dt.named_id,
-        "content_type": f"{dt.content_type.app_label}.{dt.content_type.model}",
+        "content_types": [
+            f"{ct.app_label}.{ct.model}" for ct in dt.content_types.all()
+        ],
         "template": dt.template,
         "model_fields": list(dt.model_fields) if dt.model_fields is not None else [],
         "annotate_fields": list(dt.annotate_fields) if dt.annotate_fields is not None else [],
@@ -63,8 +65,8 @@ def serialize_template(dt: DynamicTemplate) -> dict[str, Any]:
 
 def serialize_export(qs) -> dict[str, Any]:
     templates = []
-    for dt in qs.order_by("pk").select_related("content_type").prefetch_related(
-        "relation_contexts", "relation_contexts__content_type"
+    for dt in qs.order_by("pk").prefetch_related(
+        "content_types", "relation_contexts", "relation_contexts__content_type"
     ):
         templates.append(serialize_template(dt))
     return {
@@ -97,8 +99,8 @@ def json_attachment_response(filename: str, payload: dict[str, Any]) -> HttpResp
 
 def import_payload(data: dict[str, Any], *, replace: bool = True) -> dict[str, Any]:
     version = data.get("format_version", 1)
-    if version != EXPORT_FORMAT_VERSION:
-        raise ValueError(f"Unsupported format_version {version!r} (expected {EXPORT_FORMAT_VERSION}).")
+    if version not in (1, EXPORT_FORMAT_VERSION):
+        raise ValueError(f"Unsupported format_version {version!r} (expected 1 or {EXPORT_FORMAT_VERSION}).")
     items = data.get("dynamic_templates") or data.get("templates")
     if not isinstance(items, list):
         raise ValueError("Expected a JSON object with key 'dynamic_templates' (array).")
@@ -119,11 +121,23 @@ def import_payload(data: dict[str, Any], *, replace: bool = True) -> dict[str, A
     return {"created": created, "updated": updated, "errors": errors}
 
 
+def _resolve_content_types(item: dict[str, Any]) -> list:
+    """Resolve content types from either ``content_types`` (list) or legacy ``content_type`` key."""
+    if "content_types" in item:
+        raw = item["content_types"]
+        if not isinstance(raw, list):
+            raise ValueError("content_types must be a list")
+        return [resolve_content_type(v) for v in raw]
+    if "content_type" in item:
+        return [resolve_content_type(item["content_type"])]
+    raise KeyError("content_types")
+
+
 def _import_one_template(item: dict[str, Any], *, replace: bool) -> tuple[int, int]:
     label = str(item.get("label", "")).strip()
     if not label:
         raise ValueError("label is required")
-    ct = resolve_content_type(item["content_type"])
+    cts = _resolve_content_types(item)
     template_body = item.get("template", "") or ""
     model_fields = item.get("model_fields") or []
     annotate_fields = item.get("annotate_fields") or []
@@ -139,7 +153,7 @@ def _import_one_template(item: dict[str, Any], *, replace: bool) -> tuple[int, i
     raw_object = bool(item.get("raw_object", False))
     context_object = str(item.get("context_object", "") or "").strip()
 
-    dt = DynamicTemplate.objects.filter(content_type=ct, label=label).first()
+    dt = DynamicTemplate.objects.filter(label=label).first()
     if dt:
         if not replace:
             return (0, 0)
@@ -150,13 +164,13 @@ def _import_one_template(item: dict[str, Any], *, replace: bool) -> tuple[int, i
         dt.raw_object = raw_object
         dt.context_object = context_object
         dt.save()
+        dt.content_types.set(cts)
         DynamicRelationContext.objects.filter(dynamic_template=dt).delete()
         updated = 1
         created = 0
     else:
         dt = DynamicTemplate.objects.create(
             label=label,
-            content_type=ct,
             template=template_body,
             model_fields=model_fields,
             annotate_fields=annotate_fields,
@@ -164,6 +178,7 @@ def _import_one_template(item: dict[str, Any], *, replace: bool) -> tuple[int, i
             raw_object=raw_object,
             context_object=context_object,
         )
+        dt.content_types.set(cts)
         created, updated = 1, 0
 
     rels = item.get("relation_contexts") or []

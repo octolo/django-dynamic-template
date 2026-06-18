@@ -6,6 +6,12 @@ from dynamic_template.models import DynamicRelationContext, DynamicTemplate
 from tests.app.models import Article, Product
 
 
+def _create_dt(label, cts, template, **kwargs):
+    dt = DynamicTemplate.objects.create(label=label, template=template, **kwargs)
+    dt.content_types.set(cts if isinstance(cts, (list, tuple)) else [cts])
+    return dt
+
+
 @pytest.mark.django_db
 def test_relation_context_uses_manager_and_filter_on_object():
     product = Product.objects.create(name="P1")
@@ -15,10 +21,10 @@ def test_relation_context_uses_manager_and_filter_on_object():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Product block",
-        content_type=ct_product,
-        template="{% for row in article %}{{ row.title }},{% endfor %}",
+    dt = _create_dt(
+        "Product block",
+        ct_product,
+        "{% for row in article %}{{ row.title }},{% endfor %}",
     )
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
@@ -42,11 +48,7 @@ def test_relation_context_resolves_filter_from_article_in_context():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl2",
-        content_type=ct_product,
-        template="{% for row in arts %}{{ row.title }}{% endfor %}",
-    )
+    dt = _create_dt("Tpl2", ct_product, "{% for row in arts %}{{ row.title }}{% endfor %}")
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
         content_type=ct_article,
@@ -57,14 +59,7 @@ def test_relation_context_resolves_filter_from_article_in_context():
 
     out = Template(
         "{% load dyntpl %}{% dyntpl tid obj=p %}",
-    ).render(
-        Context(
-            {
-                "tid": dt.named_id,
-                "p": product,
-            }
-        )
-    )
+    ).render(Context({"tid": dt.named_id, "p": product}))
 
     assert out.strip() == "FromArticle"
 
@@ -78,11 +73,7 @@ def test_relation_context_legacy_bare_method_on_default_manager():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl legacy",
-        content_type=ct_product,
-        template="{{ arts|length }}",
-    )
+    dt = _create_dt("Tpl legacy", ct_product, "{{ arts|length }}")
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
         content_type=ct_article,
@@ -106,10 +97,10 @@ def test_relation_context_values_list_single_field_flat():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl vl flat",
-        content_type=ct_article,
-        template="{% for row in products %}{{ row.name }}{% endfor %}",
+    dt = _create_dt(
+        "Tpl vl flat",
+        ct_article,
+        "{% for row in products %}{{ row.name }}{% endfor %}",
     )
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
@@ -135,12 +126,10 @@ def test_relation_context_values_list_multiple_columns():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl vl multi",
-        content_type=ct_article,
-        template=(
-            "{% for row in products %}{{ row.id }}|{{ row.name }}{% endfor %}"
-        ),
+    dt = _create_dt(
+        "Tpl vl multi",
+        ct_article,
+        "{% for row in products %}{{ row.id }}|{{ row.name }}{% endfor %}",
     )
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
@@ -167,10 +156,10 @@ def test_relation_context_literal_filter_merged_with_object_filter():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl literal merge",
-        content_type=ct_product,
-        template="{% for row in article %}{{ row.title }}{% endfor %}",
+    dt = _create_dt(
+        "Tpl literal merge",
+        ct_product,
+        "{% for row in article %}{{ row.title }}{% endfor %}",
     )
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
@@ -196,11 +185,7 @@ def test_relation_context_dotted_path_from_object_fk():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl fk",
-        content_type=ct_article,
-        template="{{ products.0.name }}",
-    )
+    dt = _create_dt("Tpl fk", ct_article, "{{ products.0.name }}")
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
         content_type=ct_product,
@@ -224,10 +209,10 @@ def test_relation_context_annotate_count_on_queryset():
 
     ct_product = ContentType.objects.get_for_model(Product)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl ann",
-        content_type=ct_product,
-        template="{% for row in product %}{{ row.n_articles }}{% endfor %}",
+    dt = _create_dt(
+        "Tpl ann",
+        ct_product,
+        "{% for row in product %}{{ row.n_articles }}{% endfor %}",
     )
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
@@ -253,10 +238,10 @@ def test_relation_context_python_property_on_row():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
 
-    dt = DynamicTemplate.objects.create(
-        label="Tpl prop",
-        content_type=ct_product,
-        template="{% for row in arts %}{{ row.title_upper }}{% endfor %}",
+    dt = _create_dt(
+        "Tpl prop",
+        ct_product,
+        "{% for row in arts %}{{ row.title_upper }}{% endfor %}",
     )
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
@@ -278,11 +263,7 @@ def test_relation_context_python_property_on_row():
 @pytest.mark.django_db
 def test_dynamic_template_manager_with_relation_context_count():
     ct = ContentType.objects.get_for_model(Product)
-    dt = DynamicTemplate.objects.create(
-        label="Counted",
-        content_type=ct,
-        template="x",
-    )
+    dt = _create_dt("Counted", ct, "x")
     ct_article = ContentType.objects.get_for_model(Article)
     DynamicRelationContext.objects.create(
         dynamic_template=dt,

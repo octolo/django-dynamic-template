@@ -9,15 +9,16 @@ from tests.app.models import Article, Product
 User = get_user_model()
 
 
+def _create_dt(label, cts, template, **kwargs):
+    dt = DynamicTemplate.objects.create(label=label, template=template, **kwargs)
+    dt.content_types.set(cts if isinstance(cts, (list, tuple)) else [cts])
+    return dt
+
+
 @pytest.mark.django_db
 def test_dyntpl_renders_by_named_id():
     ct = ContentType.objects.get_for_model(User)
-    DynamicTemplate.objects.create(
-        label="Hello Block",
-        content_type=ct,
-        template="Hello {{ name }}",
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Hello Block", ct, "Hello {{ name }}")
     assert dt.named_id == "hello-block"
 
     out = Template(
@@ -30,12 +31,7 @@ def test_dyntpl_renders_by_named_id():
 @pytest.mark.django_db
 def test_dyntpl_obj_skips_wrong_content_type():
     ct_user = ContentType.objects.get_for_model(User)
-    DynamicTemplate.objects.create(
-        label="Only users",
-        content_type=ct_user,
-        template="OK",
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Only users", ct_user, "OK")
 
     class Other:
         pass
@@ -51,13 +47,7 @@ def test_dyntpl_obj_skips_wrong_content_type():
 @pytest.mark.django_db
 def test_dyntpl_obj_renders_when_content_type_matches():
     ct = ContentType.objects.get_for_model(User)
-    DynamicTemplate.objects.create(
-        label="Greet",
-        content_type=ct,
-        template="Hi {{ object.username }}",
-        model_fields=["username"],
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Greet", ct, "Hi {{ object.username }}", model_fields=["username"])
     user = User(username="bob")
 
     out = Template(
@@ -68,47 +58,28 @@ def test_dyntpl_obj_renders_when_content_type_matches():
 
 
 @pytest.mark.django_db
-def test_dyntpl_ctype_disambiguates_same_named_id():
+def test_dyntpl_ctype_filters_by_content_type():
+    """A template with multiple content_types is found when filtering by either one."""
     ct_user = ContentType.objects.get_for_model(User)
     ct_product = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Dup",
-        content_type=ct_user,
-        template="USER",
-    )
-    DynamicTemplate.objects.create(
-        label="Dup",
-        content_type=ct_product,
-        template="PRODUCT",
-    )
-    nid_user = DynamicTemplate.objects.get(content_type=ct_user).named_id
-    nid_product = DynamicTemplate.objects.get(content_type=ct_product).named_id
-    assert nid_user == nid_product
-
-    ambiguous = Template("{% load dyntpl %}{% dyntpl nid %}").render(Context({"nid": nid_user}))
-    assert ambiguous.strip() == ""
+    dt = _create_dt("Multi", [ct_user, ct_product], "SHARED")
 
     out_user = Template(
         "{% load dyntpl %}{% dyntpl nid ctype=user_model %}",
-    ).render(Context({"nid": nid_user, "user_model": User}))
-    assert out_user.strip() == "USER"
+    ).render(Context({"nid": dt.named_id, "user_model": User}))
+    assert out_user.strip() == "SHARED"
 
     out_product = Template(
         "{% load dyntpl %}{% dyntpl nid ctype=product_model %}",
-    ).render(Context({"nid": nid_product, "product_model": Product}))
-    assert out_product.strip() == "PRODUCT"
+    ).render(Context({"nid": dt.named_id, "product_model": Product}))
+    assert out_product.strip() == "SHARED"
 
 
 @pytest.mark.django_db
 def test_dyntpl_obj_empty_model_fields_is_dict_of_all_concrete():
     """``model_fields`` empty → dict of all concrete columns (``{{ object.name }}``)."""
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Prod tuple",
-        content_type=ct,
-        template="{{ object.name }}",
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Prod tuple", ct, "{{ object.name }}")
     product = Product.objects.create(name="TupleName")
 
     out = Template(
@@ -121,15 +92,14 @@ def test_dyntpl_obj_empty_model_fields_is_dict_of_all_concrete():
 @pytest.mark.django_db
 def test_dyntpl_obj_merges_model_fields_annotate_and_class_attr():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Merge attrs",
-        content_type=ct,
-        template="{{ object.name }}-{{ object.toto }}-{{ object.n_art }}",
+    dt = _create_dt(
+        "Merge attrs",
+        ct,
+        "{{ object.name }}-{{ object.toto }}-{{ object.n_art }}",
         model_fields=["name"],
         annotate_fields=["n_art"],
         fields=["toto"],
     )
-    dt = DynamicTemplate.objects.get()
     product = Product.objects.create(name="M")
     Article.objects.create(title="x", product=product)
     p = Product.objects.with_n_art().get(pk=product.pk)
@@ -144,12 +114,7 @@ def test_dyntpl_obj_merges_model_fields_annotate_and_class_attr():
 @pytest.mark.django_db
 def test_dyntpl_ctype_string_app_label_model():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Sku",
-        content_type=ct,
-        template="ok",
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Sku", ct, "ok")
     out = Template(
         '{% load dyntpl %}{% dyntpl nid ctype="app.Product" %}',
     ).render(Context({"nid": dt.named_id}))
@@ -159,12 +124,7 @@ def test_dyntpl_ctype_string_app_label_model():
 @pytest.mark.django_db
 def test_dyntpl_ctype_not_leaked_into_inner_context():
     ct = ContentType.objects.get_for_model(User)
-    DynamicTemplate.objects.create(
-        label="Inner",
-        content_type=ct,
-        template="{{ ctype|default:'none' }}",
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Inner", ct, "{{ ctype|default:'none' }}")
     out = Template(
         "{% load dyntpl %}{% dyntpl nid ctype=user_model %}",
     ).render(Context({"nid": dt.named_id, "user_model": User}))

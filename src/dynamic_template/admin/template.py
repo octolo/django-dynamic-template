@@ -15,7 +15,8 @@ from dynamic_template.rendering import render_dynamic_template_fragment
 
 
 def _preview_form_for_template(obj: DynamicTemplate) -> type[forms.Form]:
-    Model = obj.content_type.model_class()
+    first_ct = obj.content_types.first()
+    Model = first_ct.model_class() if first_ct else None
     model_label = Model._meta.label if Model else "?"
 
     class DynamicTemplatePreviewForm(forms.Form):
@@ -70,28 +71,22 @@ class DynamicTemplateImportForm(forms.Form):
 
 @admin.register(DynamicTemplate)
 class DynamicTemplateAdmin(AdminBoostModel):
-    list_display = ("label", "named_id", "content_type", "relation_context_count_display")
-    list_filter = ("content_type",)
+    list_display = ("label", "named_id", "content_types_display", "relation_context_count_display")
+    list_filter = ("content_types",)
     search_fields = ("label", "named_id", "template")
     readonly_fields = ("named_id",)
-    fieldsets = (
-        (
-            None,
-            {
-                "fields": (
-                    "label",
-                    "named_id",
-                    "content_type",
-                    "model_fields",
-                    "annotate_fields",
-                    "fields",
-                    "raw_object",
-                    "context_object",
-                    "template",
-                ),
-            },
-        ),
-    )
+    filter_horizontal = ("content_types",)
+
+    def change_fieldsets(self):
+        self.add_to_fieldset(None, ("label", "named_id", "content_types",))
+        self.add_to_fieldset(_("Template"), ("template",))
+        self.add_to_fieldset(_("Context"), ("raw_object", "context_object",))
+        self.add_to_fieldset(_("Fields"), ("model_fields", "annotate_fields", "fields",))
+
+
+    @admin.display(description=_("Content types"))
+    def content_types_display(self, obj):
+        return ", ".join(str(ct) for ct in obj.content_types.all()) or "—"
     inlines = (DynamicRelationContextInline,)
 
     def get_queryset(self, request):
@@ -178,7 +173,8 @@ class DynamicTemplateAdmin(AdminBoostModel):
     )
     def admin_preview_render(self, request, obj, form=None):
         PreviewForm = _preview_form_for_template(obj)
-        Model = obj.content_type.model_class()
+        first_ct = obj.content_types.first()
+        Model = first_ct.model_class() if first_ct else None
 
         if form is None:
             return {"form": PreviewForm()}

@@ -16,6 +16,12 @@ from dynamic_template.models import DynamicRelationContext, DynamicTemplate
 from tests.app.models import Article, Product
 
 
+def _create_dt(label, cts, template, **kwargs):
+    dt = DynamicTemplate.objects.create(label=label, template=template, **kwargs)
+    dt.content_types.set(cts if isinstance(cts, (list, tuple)) else [cts])
+    return dt
+
+
 # ---------------------------------------------------------------------------
 # content_disposition_attachment
 # ---------------------------------------------------------------------------
@@ -53,28 +59,19 @@ def test_json_attachment_response():
 @pytest.mark.django_db
 def test_export_contains_raw_object_and_context_object():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Export test",
-        content_type=ct,
-        template="Hello",
-        raw_object=True,
-        context_object="product",
-    )
+    _create_dt("Export test", ct, "Hello", raw_object=True, context_object="product")
     payload = serialize_export(DynamicTemplate.objects.all())
     tpl_data = payload["dynamic_templates"][0]
     assert tpl_data["raw_object"] is True
     assert tpl_data["context_object"] == "product"
+    assert f"{ct.app_label}.{ct.model}" in tpl_data["content_types"]
 
 
 @pytest.mark.django_db
 def test_export_includes_relation_contexts():
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
-    dt = DynamicTemplate.objects.create(
-        label="With rels",
-        content_type=ct_product,
-        template="x",
-    )
+    dt = _create_dt("With rels", ct_product, "x")
     DynamicRelationContext.objects.create(
         dynamic_template=dt,
         content_type=ct_article,
@@ -90,12 +87,12 @@ def test_export_includes_relation_contexts():
 
 
 # ---------------------------------------------------------------------------
-# import_payload
+# import_payload – legacy single content_type key (backward compat)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_import_creates_template():
+def test_import_creates_template_legacy_content_type():
     ct = ContentType.objects.get_for_model(Product)
     data = {
         "format_version": 1,
@@ -119,16 +116,37 @@ def test_import_creates_template():
     assert dt.raw_object is True
     assert dt.context_object == "product"
     assert dt.model_fields == ["name"]
+    assert dt.content_types.filter(pk=ct.pk).exists()
+
+
+@pytest.mark.django_db
+def test_import_creates_template_content_types_list():
+    ct_product = ContentType.objects.get_for_model(Product)
+    ct_article = ContentType.objects.get_for_model(Article)
+    data = {
+        "format_version": 1,
+        "dynamic_templates": [
+            {
+                "label": "Multi CT",
+                "content_types": [
+                    f"{ct_product.app_label}.{ct_product.model}",
+                    f"{ct_article.app_label}.{ct_article.model}",
+                ],
+                "template": "hello",
+            }
+        ],
+    }
+    result = import_payload(data)
+    assert result["created"] == 1
+    assert result["errors"] == []
+    dt = DynamicTemplate.objects.get()
+    assert dt.content_types.count() == 2
 
 
 @pytest.mark.django_db
 def test_import_updates_existing_template():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Updatable",
-        content_type=ct,
-        template="old",
-    )
+    _create_dt("Updatable", ct, "old")
     data = {
         "format_version": 1,
         "dynamic_templates": [
@@ -153,7 +171,7 @@ def test_import_updates_existing_template():
 @pytest.mark.django_db
 def test_import_no_replace_skips_existing():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(label="Keep", content_type=ct, template="original")
+    _create_dt("Keep", ct, "original")
     data = {
         "format_version": 1,
         "dynamic_templates": [
@@ -226,10 +244,10 @@ def test_export_import_round_trip():
     """Full export → import round-trip preserves all fields."""
     ct_product = ContentType.objects.get_for_model(Product)
     ct_article = ContentType.objects.get_for_model(Article)
-    dt = DynamicTemplate.objects.create(
-        label="Round trip",
-        content_type=ct_product,
-        template="{{ object.name }}",
+    dt = _create_dt(
+        "Round trip",
+        ct_product,
+        "{{ object.name }}",
         model_fields=["name"],
         annotate_fields=["n_art"],
         fields=["toto"],
@@ -263,6 +281,7 @@ def test_export_import_round_trip():
     assert dt2.fields == ["toto"]
     assert dt2.raw_object is True
     assert dt2.context_object == "product"
+    assert dt2.content_types.filter(pk=ct_product.pk).exists()
 
     rc = DynamicRelationContext.objects.get()
     assert rc.name == "articles"
@@ -281,13 +300,7 @@ def test_export_import_round_trip():
 @pytest.mark.django_db
 def test_raw_object_exposes_model_instance():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Raw",
-        content_type=ct,
-        template="{{ object.name }}",
-        raw_object=True,
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Raw", ct, "{{ object.name }}", raw_object=True)
     product = Product.objects.create(name="RawProd")
 
     out = Template(
@@ -300,14 +313,7 @@ def test_raw_object_exposes_model_instance():
 def test_raw_object_false_gives_dict():
     """With raw_object=False and model_fields set, object is a dict."""
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Dict obj",
-        content_type=ct,
-        template="{{ object.name }}",
-        model_fields=["name"],
-        raw_object=False,
-    )
-    dt = DynamicTemplate.objects.get()
+    dt = _create_dt("Dict obj", ct, "{{ object.name }}", model_fields=["name"], raw_object=False)
     product = Product.objects.create(name="DictProd")
 
     out = Template(
@@ -324,14 +330,9 @@ def test_raw_object_false_gives_dict():
 @pytest.mark.django_db
 def test_context_object_resolves_from_parent_context():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Auto obj",
-        content_type=ct,
-        template="{{ object.name }}",
-        model_fields=["name"],
-        context_object="product",
+    dt = _create_dt(
+        "Auto obj", ct, "{{ object.name }}", model_fields=["name"], context_object="product"
     )
-    dt = DynamicTemplate.objects.get()
     product = Product.objects.create(name="AutoProd")
 
     out = Template(
@@ -343,14 +344,13 @@ def test_context_object_resolves_from_parent_context():
 @pytest.mark.django_db
 def test_context_object_dotted_path():
     ct = ContentType.objects.get_for_model(Product)
-    DynamicTemplate.objects.create(
-        label="Dotted obj",
-        content_type=ct,
-        template="{{ object.name }}",
+    dt = _create_dt(
+        "Dotted obj",
+        ct,
+        "{{ object.name }}",
         model_fields=["name"],
         context_object="article.product",
     )
-    dt = DynamicTemplate.objects.get()
     product = Product.objects.create(name="Dotted")
     article = Article.objects.create(title="Art", product=product)
 

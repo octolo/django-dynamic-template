@@ -23,7 +23,7 @@ DynamicTemplateManager = models.Manager.from_queryset(DynamicTemplateQuerySet)
 
 class DynamicTemplate(models.Model):
     """
-    Template fragment stored in the DB, scoped to a single ContentType.
+    Template fragment stored in the DB, scoped to one or more ContentTypes.
 
     ``model_fields`` selects ORM columns; ``annotate_fields`` is a list of annotation **aliases**
     already present on the bound instance (your queryset / manager must call ``.annotate``).
@@ -38,11 +38,11 @@ class DynamicTemplate(models.Model):
         max_length=255,
         help_text=_("Human-readable name; used with NamedID to build `named_id`."),
     )
-    content_type = models.ForeignKey(
+    content_types = models.ManyToManyField(
         ContentType,
-        on_delete=models.CASCADE,
+        blank=True,
         related_name="dynamic_templates",
-        verbose_name=_("content type"),
+        verbose_name=_("content types"),
     )
     template = RichTextField(
         _("template"),
@@ -53,7 +53,7 @@ class DynamicTemplate(models.Model):
     )
     named_id = NamedIDField(
         source_fields=["label"],
-        unique=["content_type"],
+        unique=True,
         max_length=255,
     )
     model_fields = models.JSONField(
@@ -107,9 +107,6 @@ class DynamicTemplate(models.Model):
     class Meta:
         verbose_name = _("dynamic template")
         verbose_name_plural = _("dynamic templates")
-        indexes = [
-            models.Index(fields=["content_type", "named_id"]),
-        ]
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
