@@ -1,0 +1,6 @@
+{
+  "label": "Fixture nested parent",
+  "content_types": ["app.product"],
+  "template": "Start {% dyntpl fixture-nested-child obj=object %} End",
+  "raw_object": true
+}

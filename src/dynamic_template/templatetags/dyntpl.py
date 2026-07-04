@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -9,8 +10,9 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.utils.safestring import mark_safe
 
-from dynamic_template.models import DynamicTemplate
+from dynamic_template.models import DynamicTemplate, DynamicTemplateVariant
 from dynamic_template.rendering import render_dynamic_template_fragment
+from dynamic_template.variant_args import parse_variant_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,50 @@ def _strip_quotes(value: str) -> str:
     return value
 
 
+def _lookup_template_and_variant_args(
+    named_id: str,
+    ctype_filter: ContentType | None,
+) -> tuple[DynamicTemplate | None, dict[str, object]]:
+    qs = DynamicTemplate.objects.prefetch_related(
+        "content_types",
+        "relation_contexts",
+        "relation_contexts__content_type",
+    )
+    if ctype_filter is not None:
+        qs = qs.filter(content_types=ctype_filter)
+
+    try:
+        return qs.get(named_id=named_id), {}
+    except DynamicTemplate.MultipleObjectsReturned:
+        return None, {}
+    except DynamicTemplate.DoesNotExist:
+        pass
+
+    try:
+        variant = (
+            DynamicTemplateVariant.objects.select_related("dynamic_template")
+            .prefetch_related(
+                "dynamic_template__content_types",
+                "dynamic_template__relation_contexts",
+                "dynamic_template__relation_contexts__content_type",
+            )
+            .get(named_id=named_id)
+        )
+    except (DynamicTemplateVariant.DoesNotExist, DynamicTemplateVariant.MultipleObjectsReturned):
+        return None, {}
+
+    dt = variant.dynamic_template
+    if ctype_filter is not None and not dt.content_types.filter(pk=ctype_filter.pk).exists():
+        return None, {}
+
+    try:
+        variant_args = parse_variant_arguments(variant.arguments)
+    except (ValueError, json.JSONDecodeError):
+        return None, {}
+
+    return dt, variant_args
+
+
 class DynTplNode(template.Node):
     """Render a :class:`~dynamic_template.models.DynamicTemplate` by ``named_id``.
 
@@ -57,6 +103,20 @@ class DynTplNode(template.Node):
         {% dyntpl slug_variable obj=article title=article.title %}
         {% dyntpl slug ctype=Product %}
         {% dyntpl slug ctype="myapp.Product" obj=instance %}
+        {% dyntpl slug debug %}
+        {% dyntpl slug arg1 arg2 %}
+
+    A :class:`~dynamic_template.models.DynamicTemplateVariant` is resolved when
+    ``named_id`` matches a variant slug; its ``arguments`` are merged into the
+    render context before tag kwargs (e.g. ``{% dyntpl list-contact-only-woman %}``
+    is like ``{% dyntpl list-contact woman %}`` when the variant label is ``only woman``).
+
+    Positional names after ``named_id`` without ``=`` are passed as ``name=True``
+    in the inner render context (e.g. ``{% dyntpl slug debug %}`` or
+    ``{% dyntpl slug arg1 arg2 %}``).
+
+    Inside a DB fragment, ``dyntpl`` / ``var`` and ``tz`` tags are available
+    without ``{% load %}`` (see :func:`~dynamic_template.rendering.get_fragment_engine`).
 
     The first argument is the template's ``named_id`` (from NamedID on ``label``).
     Hyphens are allowed without quoting.  Quoted strings and template variables
@@ -105,17 +165,8 @@ class DynTplNode(template.Node):
         if ctype_kw is not None and ctype_filter is None:
             return ""
 
-        qs = DynamicTemplate.objects.prefetch_related(
-            "content_types",
-            "relation_contexts",
-            "relation_contexts__content_type",
-        )
-        if ctype_filter is not None:
-            qs = qs.filter(content_types=ctype_filter)
-
-        try:
-            dt = qs.get(named_id=named_id)
-        except (DynamicTemplate.DoesNotExist, DynamicTemplate.MultipleObjectsReturned):
+        dt, variant_args = _lookup_template_and_variant_args(named_id, ctype_filter)
+        if dt is None:
             return ""
 
         if bound is None and dt.context_object:
@@ -136,6 +187,7 @@ class DynTplNode(template.Node):
             base.update(context.flatten())
 
         request = context.get("request")
+        merged_extra = {**variant_args, **kwargs}
         try:
             return mark_safe(
                 render_dynamic_template_fragment(
@@ -143,7 +195,7 @@ class DynTplNode(template.Node):
                     request=request,
                     bound=bound,
                     base_context=base,
-                    extra=kwargs,
+                    extra=merged_extra,
                 )
             )
         except ValueError:
@@ -168,10 +220,14 @@ def do_dyntpl(parser: template.base.Parser, token: template.base.Token) -> DynTp
     slug_parts = [first_arg]
     idx = 2
     while idx < len(bits):
-        if "=" in bits[idx]:
+        bit = bits[idx]
+        if "=" in bit:
             break
-        slug_parts.append(bits[idx])
-        idx += 1
+        if "-" in bit or "/" in bit:
+            slug_parts.append(bit)
+            idx += 1
+            continue
+        break
     kwarg_bits = bits[idx:]
 
     raw_slug = " ".join(slug_parts)
@@ -187,10 +243,12 @@ def do_dyntpl(parser: template.base.Parser, token: template.base.Token) -> DynTp
     kwargs: dict[str, template.base.FilterExpression] = {}
     for bit in kwarg_bits:
         if "=" not in bit:
-            raise template.TemplateSyntaxError(f"'{tag_name}' tag: unexpected positional argument '{bit}' after named_id")
+            kwargs[bit] = parser.compile_filter("True")
+            continue
         key, _, val = bit.partition("=")
         kwargs[key] = parser.compile_filter(val)
 
     return DynTplNode(named_id_literal, named_id_var, kwargs)
 
 
+register.tag("var", do_dyntpl)

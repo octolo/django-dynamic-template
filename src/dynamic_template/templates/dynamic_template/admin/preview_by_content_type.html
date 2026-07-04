@@ -1,0 +1,27 @@
+{% extends "admin_boost/change_form.html" %}
+{% load i18n %}
+{% block after_field_sets %}
+{{ block.super }}
+{% if content_type_previews %}
+{% for preview in content_type_previews %}
+<div style="margin-bottom: 2em;">
+  <p style="font-weight: bold; text-decoration: underline;">{{ preview.content_type }}</p>
+  {% if preview.error %}
+  <p class="errornote">{{ preview.error }}</p>
+  {% else %}
+  <div>{{ preview.html|safe }}</div>
+  {% for variant_preview in preview.variants %}
+  <p style="font-style: italic; text-decoration: underline; font-size: small;">{{ variant_preview.label }}</p>
+  {% if variant_preview.error %}
+  <p class="errornote">{{ variant_preview.error }}</p>
+  {% else %}
+  <div>{{ variant_preview.html|safe }}</div>
+  {% endif %}
+  {% endfor %}
+  {% endif %}
+</div>
+{% endfor %}
+{% elif no_content_types %}
+<p>{% trans "No content types are associated with this template." %}</p>
+{% endif %}
+{% endblock %}

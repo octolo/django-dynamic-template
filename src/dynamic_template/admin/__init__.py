@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-from . import template  # noqa: F401
+from . import template, variant  # noqa: F401

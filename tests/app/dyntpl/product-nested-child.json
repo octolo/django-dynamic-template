@@ -1,0 +1,5 @@
+{
+  "label": "Fixture nested child",
+  "content_types": ["app.product"],
+  "template": "[{{ object.name }}]"
+}

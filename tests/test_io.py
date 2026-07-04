@@ -1,18 +1,22 @@
 """Tests for dynamic_template.io (export / import round-trip, raw_object, context_object)."""
 
+import io
 import json
+import zipfile
 
 import pytest
 from django.contrib.contenttypes.models import ContentType
 from django.template import Context, Template
 
 from dynamic_template.io import (
+    archive_attachment_response,
+    build_export_archive,
     content_disposition_attachment,
     import_payload,
     json_attachment_response,
     serialize_export,
 )
-from dynamic_template.models import DynamicRelationContext, DynamicTemplate
+from dynamic_template.models import DynamicRelationContext, DynamicTemplate, DynamicTemplateVariant
 from tests.app.models import Article, Product
 
 
@@ -49,6 +53,61 @@ def test_json_attachment_response():
     assert "attachment" in resp["Content-Disposition"]
     body = json.loads(resp.content)
     assert body == {"a": 1}
+
+
+def test_archive_attachment_response():
+    resp = archive_attachment_response("templates.zip", b"PK\x03\x04")
+    assert resp.status_code == 200
+    assert resp["Content-Type"] == "application/zip"
+    assert "attachment" in resp["Content-Disposition"]
+
+
+# ---------------------------------------------------------------------------
+# export archive (one JSON per template)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_build_export_archive_one_json_per_named_id():
+    ct_product = ContentType.objects.get_for_model(Product)
+    ct_article = ContentType.objects.get_for_model(Article)
+    dt_a = _create_dt("Archive A", ct_product, "A")
+    _create_dt("Archive B", ct_product, "B")
+    DynamicRelationContext.objects.create(
+        dynamic_template=dt_a,
+        content_type=ct_article,
+        manager_method="objects.all",
+        name="articles",
+    )
+
+    archive = build_export_archive(DynamicTemplate.objects.all())
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        names = sorted(zf.namelist())
+        assert names == ["archive-a.json", "archive-b.json"]
+        payload_a = json.loads(zf.read("archive-a.json").decode("utf-8"))
+        assert payload_a["format_version"] == 2
+        assert len(payload_a["dynamic_templates"]) == 1
+        assert payload_a["dynamic_templates"][0]["label"] == "Archive A"
+        assert payload_a["dynamic_templates"][0]["relation_contexts"][0]["name"] == "articles"
+
+
+@pytest.mark.django_db
+def test_archive_json_files_are_importable():
+    ct = ContentType.objects.get_for_model(Product)
+    _create_dt("Zip import", ct, "hello")
+    archive = build_export_archive(DynamicTemplate.objects.all())
+
+    DynamicTemplate.objects.all().delete()
+
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        for name in zf.namelist():
+            payload = json.loads(zf.read(name).decode("utf-8"))
+            result = import_payload(payload)
+            assert result["errors"] == []
+
+    dt = DynamicTemplate.objects.get()
+    assert dt.label == "Zip import"
+    assert dt.template == "hello"
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +349,94 @@ def test_export_import_round_trip():
     assert rc.filter_literal == {"title": "x"}
     assert rc.model_fields == ["title"]
     assert rc.fields == ["title_upper"]
+
+
+@pytest.mark.django_db
+def test_export_import_round_trip_variants():
+    ct = ContentType.objects.get_for_model(Product)
+    dt = _create_dt(
+        "List contact",
+        ct,
+        "{% if woman %}F{% else %}M{% endif %}",
+    )
+    DynamicTemplateVariant.objects.create(
+        dynamic_template=dt,
+        label="only woman",
+        arguments="woman",
+    )
+    payload = serialize_export(DynamicTemplate.objects.all())
+    tpl_data = payload["dynamic_templates"][0]
+    assert len(tpl_data["variants"]) == 1
+    assert tpl_data["variants"][0]["label"] == "only woman"
+    assert tpl_data["variants"][0]["arguments"] == "woman"
+    assert tpl_data["variants"][0]["named_id"] == "list-contact-only-woman"
+
+    DynamicTemplateVariant.objects.all().delete()
+    DynamicTemplate.objects.all().delete()
+
+    result = import_payload(payload)
+    assert result["created"] == 1
+    assert result["errors"] == []
+
+    dt2 = DynamicTemplate.objects.get()
+    variant = dt2.variants.get()
+    assert variant.label == "only woman"
+    assert variant.named_id == "list-contact-only-woman"
+    assert variant.arguments == "woman"
+
+
+@pytest.mark.django_db
+def test_import_creates_variants_from_payload():
+    ct = ContentType.objects.get_for_model(Product)
+    data = {
+        "format_version": 2,
+        "dynamic_templates": [
+            {
+                "label": "List contact",
+                "content_types": [f"{ct.app_label}.{ct.model}"],
+                "template": "{% if woman %}F{% else %}M{% endif %}",
+                "variants": [
+                    {"label": "only woman", "arguments": "woman=true"},
+                ],
+            }
+        ],
+    }
+    result = import_payload(data)
+    assert result["created"] == 1
+    assert result["errors"] == []
+
+    dt = DynamicTemplate.objects.get()
+    variant = dt.variants.get()
+    assert variant.named_id == "list-contact-only-woman"
+    assert variant.arguments == "woman=true"
+
+
+@pytest.mark.django_db
+def test_import_replace_clears_old_variants():
+    ct = ContentType.objects.get_for_model(Product)
+    dt = _create_dt("List contact", ct, "x")
+    DynamicTemplateVariant.objects.create(
+        dynamic_template=dt,
+        label="old",
+        arguments="old",
+    )
+    data = {
+        "format_version": 2,
+        "dynamic_templates": [
+            {
+                "label": "List contact",
+                "content_types": [f"{ct.app_label}.{ct.model}"],
+                "template": "y",
+                "variants": [
+                    {"label": "new", "arguments": "new"},
+                ],
+            }
+        ],
+    }
+    result = import_payload(data, replace=True)
+    assert result["updated"] == 1
+    assert dt.variants.count() == 1
+    assert dt.variants.get().label == "new"
 
 
 # ---------------------------------------------------------------------------

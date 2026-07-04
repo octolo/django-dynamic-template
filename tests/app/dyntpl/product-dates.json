@@ -1,0 +1,5 @@
+{
+  "label": "Fixture dates",
+  "content_types": ["app.product"],
+  "template": "{% timezone \"UTC\" %}Date: {% now \"Y-m-d\" %}{% endtimezone %}"
+}

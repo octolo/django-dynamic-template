@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from typing import Any
 from urllib.parse import quote
 
@@ -11,7 +13,7 @@ from django.http import HttpResponse
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 
-from dynamic_template.models import DynamicRelationContext, DynamicTemplate
+from dynamic_template.models import DynamicRelationContext, DynamicTemplate, DynamicTemplateVariant
 
 EXPORT_FORMAT_VERSION = 2
 
@@ -30,6 +32,14 @@ def resolve_content_type(label: str) -> ContentType:
     if Model is None:
         raise ValueError(f"Unknown model {label!r}.")
     return ContentType.objects.get_for_model(Model, for_concrete_model=False)
+
+
+def serialize_variant(variant: DynamicTemplateVariant) -> dict[str, Any]:
+    return {
+        "label": variant.label,
+        "named_id": variant.named_id,
+        "arguments": variant.arguments,
+    }
 
 
 def serialize_relation(rc: DynamicRelationContext) -> dict[str, Any]:
@@ -59,6 +69,7 @@ def serialize_template(dt: DynamicTemplate) -> dict[str, Any]:
         "raw_object": dt.raw_object,
         "context_object": dt.context_object or "",
         "relation_contexts": [serialize_relation(r) for r in dt.relation_contexts.all()],
+        "variants": [serialize_variant(v) for v in dt.variants.all()],
     }
     return data
 
@@ -66,13 +77,52 @@ def serialize_template(dt: DynamicTemplate) -> dict[str, Any]:
 def serialize_export(qs) -> dict[str, Any]:
     templates = []
     for dt in qs.order_by("pk").prefetch_related(
-        "content_types", "relation_contexts", "relation_contexts__content_type"
+        "content_types", "relation_contexts", "relation_contexts__content_type", "variants"
     ):
         templates.append(serialize_template(dt))
     return {
         "format_version": EXPORT_FORMAT_VERSION,
         "dynamic_templates": templates,
     }
+
+
+def serialize_export_one(dt: DynamicTemplate) -> dict[str, Any]:
+    return {
+        "format_version": EXPORT_FORMAT_VERSION,
+        "dynamic_templates": [serialize_template(dt)],
+    }
+
+
+def safe_export_stem(named_id: str, pk: int) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in named_id).strip("-")[:80]
+    return safe or f"template-{pk}"
+
+
+def _export_queryset(qs):
+    return qs.order_by("pk").prefetch_related(
+        "content_types", "relation_contexts", "relation_contexts__content_type", "variants"
+    )
+
+
+def build_export_archive(qs) -> bytes:
+    """One import-compatible JSON file per template, bundled in a ZIP archive."""
+    buffer = io.BytesIO()
+    used_names: set[str] = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for dt in _export_queryset(qs):
+            stem = safe_export_stem(dt.named_id, dt.pk)
+            entry = stem
+            suffix = 1
+            while entry in used_names:
+                entry = f"{stem}-{suffix}"
+                suffix += 1
+            used_names.add(entry)
+            payload = serialize_export_one(dt)
+            body = (
+                json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+            ).encode("utf-8")
+            zf.writestr(f"{entry}.json", body)
+    return buffer.getvalue()
 
 
 def content_disposition_attachment(filename: str) -> str:
@@ -93,6 +143,12 @@ def json_attachment_response(filename: str, payload: dict[str, Any]) -> HttpResp
         json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     ).encode("utf-8")
     response = HttpResponse(body, content_type="application/json; charset=utf-8")
+    response["Content-Disposition"] = content_disposition_attachment(filename)
+    return response
+
+
+def archive_attachment_response(filename: str, body: bytes) -> HttpResponse:
+    response = HttpResponse(body, content_type="application/zip")
     response["Content-Disposition"] = content_disposition_attachment(filename)
     return response
 
@@ -166,6 +222,7 @@ def _import_one_template(item: dict[str, Any], *, replace: bool) -> tuple[int, i
         dt.save()
         dt.content_types.set(cts)
         DynamicRelationContext.objects.filter(dynamic_template=dt).delete()
+        DynamicTemplateVariant.objects.filter(dynamic_template=dt).delete()
         updated = 1
         created = 0
     else:
@@ -198,5 +255,20 @@ def _import_one_template(item: dict[str, Any], *, replace: bool) -> tuple[int, i
             annotate_fields=rel.get("annotate_fields") or [],
             fields=rel.get("fields") or [],
             name=str(rel.get("name", "")).strip(),
+        )
+
+    variants = item.get("variants") or []
+    if not isinstance(variants, list):
+        raise ValueError("variants must be a list")
+    for var in variants:
+        if not isinstance(var, dict):
+            raise ValueError("Each variant must be an object")
+        var_label = str(var.get("label", "")).strip()
+        if not var_label:
+            raise ValueError("variant label is required")
+        DynamicTemplateVariant.objects.create(
+            dynamic_template=dt,
+            label=var_label,
+            arguments=str(var.get("arguments") or ""),
         )
     return (created, updated)

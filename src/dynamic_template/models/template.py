@@ -29,6 +29,9 @@ class DynamicTemplate(models.Model):
     already present on the bound instance (your queryset / manager must call ``.annotate``).
     ``fields`` lists extra Python names via ``getattr``. ``object`` in the fragment is a **dict**.
     Relation contexts still see the real model instance until after they run.
+
+    Variants (``DynamicTemplateVariant``) are shortcuts with preset render arguments;
+    they are exported/imported nested under ``variants`` in the same JSON payload.
     """
 
     objects = DynamicTemplateManager()
@@ -113,6 +116,9 @@ class DynamicTemplate(models.Model):
         # NamedIDField is filled in pre_save but the in-memory instance is not updated (django-namedid).
         if self.pk:
             self.refresh_from_db(fields=["named_id"])
+            for variant in self.variants.all():
+                if variant.named_id_needs_resync():
+                    variant.save()
 
     def __str__(self) -> str:
         return f"{self.label} ({self.named_id})"

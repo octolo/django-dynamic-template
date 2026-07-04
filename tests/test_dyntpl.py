@@ -129,3 +129,66 @@ def test_dyntpl_ctype_not_leaked_into_inner_context():
         "{% load dyntpl %}{% dyntpl nid ctype=user_model %}",
     ).render(Context({"nid": dt.named_id, "user_model": User}))
     assert out.strip() == "none"
+
+
+@pytest.mark.django_db
+def test_dyntpl_multiple_bare_args_set_true_in_context():
+    ct = ContentType.objects.get_for_model(User)
+    dt = _create_dt(
+        "Multi flags",
+        ct,
+        "{% if alpha and beta %}both{% elif alpha %}alpha{% else %}none{% endif %}",
+    )
+    out = Template(
+        "{% load dyntpl %}{% dyntpl multi-flags alpha beta %}",
+    ).render(Context({}))
+    assert out.strip() == "both"
+
+
+@pytest.mark.django_db
+def test_dyntpl_bare_arg_sets_true_in_context():
+    ct = ContentType.objects.get_for_model(User)
+    dt = _create_dt("Flags", ct, "{% if debug %}on{% else %}off{% endif %}")
+    out = Template(
+        "{% load dyntpl %}{% dyntpl nid debug %}",
+    ).render(Context({"nid": dt.named_id}))
+    assert out.strip() == "on"
+
+
+@pytest.mark.django_db
+def test_dyntpl_bare_arg_after_hyphenated_slug():
+    ct = ContentType.objects.get_for_model(User)
+    dt = _create_dt("Hyphen flags", ct, "{% if verbose %}yes{% endif %}")
+    out = Template(
+        "{% load dyntpl %}{% dyntpl hyphen-flags verbose %}",
+    ).render(Context({}))
+    assert out.strip() == "yes"
+
+
+@pytest.mark.django_db
+def test_var_tag_is_alias_for_dyntpl():
+    ct = ContentType.objects.get_for_model(User)
+    dt = _create_dt("Var alias", ct, "Hi {{ name }}")
+    out = Template(
+        "{% load dyntpl %}{% var tpl_id name=user.username %}",
+    ).render(Context({"tpl_id": dt.named_id, "user": User(username="Ada")}))
+    assert out.strip() == "Hi Ada"
+
+
+@pytest.mark.django_db
+def test_fragment_nested_dyntpl_without_load():
+    from dynamic_template.rendering import render_dynamic_template_fragment
+
+    ct = ContentType.objects.get_for_model(User)
+    _create_dt("Child builtin", ct, "child-ok")
+    parent = _create_dt("Parent builtin", ct, "{% dyntpl child-builtin %}")
+    assert render_dynamic_template_fragment(parent).strip() == "child-ok"
+
+
+@pytest.mark.django_db
+def test_fragment_timezone_without_load():
+    from dynamic_template.rendering import render_dynamic_template_fragment
+
+    ct = ContentType.objects.get_for_model(User)
+    dt = _create_dt("Tz builtin", ct, '{% timezone "UTC" %}TZ{% endtimezone %}')
+    assert render_dynamic_template_fragment(dt).strip() == "TZ"

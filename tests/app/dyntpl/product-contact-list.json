@@ -1,0 +1,11 @@
+{
+  "label": "Fixture contact list",
+  "content_types": ["app.product"],
+  "template": "{% if woman %}F{% else %}M{% endif %}",
+  "variants": [
+    {
+      "label": "only woman",
+      "arguments": "woman"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "label": "Fixture greeting",
+  "content_types": ["app.product"],
+  "template": "Hello {{ object.name }}",
+  "model_fields": ["name"]
+}

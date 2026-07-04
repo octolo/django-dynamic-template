@@ -9,12 +9,14 @@ from .template import (
     DynamicTemplateManager,
     DynamicTemplateQuerySet,
 )
+from .variant import DynamicTemplateVariant
 
 __all__ = [
     "DynamicRelationContext",
     "DynamicTemplate",
     "DynamicTemplateManager",
     "DynamicTemplateQuerySet",
+    "DynamicTemplateVariant",
     "json_str_list",
     "mapping_from_row",
     "values_list_field_names",
