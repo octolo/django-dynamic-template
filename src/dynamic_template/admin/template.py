@@ -3,6 +3,7 @@ import json
 from django import forms
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
+from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from django_boosted import AdminBoostModel, admin_boost_view
@@ -10,7 +11,7 @@ from django_boosted.decorators import AdminBoostViewConfig
 
 from .relation_context import DynamicRelationContextInline
 from .variant import DynamicTemplateVariantInline
-from dynamic_template.fixtures import discover_dyntpl_fixture_files, load_dyntpl_fixtures
+from dynamic_template.fixtures import discover_dyntpl_fixture_files, load_dyntpl_fixture_for_named_id, load_dyntpl_fixtures
 from dynamic_template.io import (
     archive_attachment_response,
     build_export_archive,
@@ -252,19 +253,85 @@ class DynamicTemplateAdmin(AdminBoostModel):
                 messages.warning(request, _("No dyntpl fixture files found."))
             for err in result.errors[:25]:
                 messages.warning(request, err)
-            return {}
+            return redirect(
+                reverse(
+                    f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_changelist",
+                    current_app=self.admin_site.name,
+                )
+            )
 
         if not fixtures:
             return {
                 "confirm": _("No dyntpl/*.json or fixtures/dyntpl/*.json files found in installed apps."),
             }
 
-        listing = ", ".join(f"{f.app_label}/{f.relative_path}" for f in fixtures)
+        listing = "\n".join(f"• {f.app_label}/{f.relative_path}" for f in fixtures)
+        from django.utils.safestring import mark_safe
+        confirm_text = (
+            str(_("Replace existing templates with fixtures from installed apps?"))
+            + "\n\n"
+            + listing
+        )
+        return {
+            "confirm": mark_safe(confirm_text.replace("\n", "<br>")),
+        }
+
+    @admin_boost_view(
+        "confirm",
+        _("Reload from fixture"),
+        config=AdminBoostViewConfig(
+            path_fragment="reload-fixture",
+            requires_object=True,
+            permission="change",
+        ),
+    )
+    def admin_reload_fixture(self, request, obj, confirmed=False):
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+
+        fixture_name = f"{obj.named_id}.json"
+        target = [f for f in discover_dyntpl_fixture_files() if f.path.name == fixture_name]
+
+        if confirmed:
+            result = load_dyntpl_fixture_for_named_id(obj.named_id, replace=True)
+            if result.files_loaded:
+                messages.success(
+                    request,
+                    _("%(file)s reloaded: %(c)d created, %(u)d updated.")
+                    % {"file": fixture_name, "c": result.created, "u": result.updated},
+                )
+            else:
+                messages.warning(request, _("Fixture was not loaded."))
+            for err in result.errors[:25]:
+                messages.warning(request, err)
+            return redirect(
+                reverse(
+                    f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_change",
+                    args=[obj.pk],
+                    current_app=self.admin_site.name,
+                )
+            )
+
+        if not target:
+            return {
+                "confirm": _(
+                    "No %(filename)s found under dyntpl/ or fixtures/dyntpl/ in installed apps."
+                ) % {"filename": fixture_name},
+            }
+
+        if len(target) > 1:
+            listing = ", ".join(f"{f.app_label}/{f.relative_path}" for f in target)
+            return {
+                "confirm": _(
+                    "Multiple files named %(filename)s found (%(files)s). Remove duplicates first."
+                ) % {"filename": fixture_name, "files": listing},
+            }
+
+        source = f"{target[0].app_label}/{target[0].relative_path}"
         return {
             "confirm": _(
-                "Replace existing templates with fixtures from installed apps? Files: %(files)s"
-            )
-            % {"files": listing},
+                "Replace « %(label)s » from %(source)s?"
+            ) % {"label": obj.label, "source": source},
         }
 
     @admin_boost_view(

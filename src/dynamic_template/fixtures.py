@@ -74,6 +74,41 @@ def normalize_fixture_payload(data: object) -> dict:
     )
 
 
+def load_dyntpl_fixture_for_named_id(
+    named_id: str,
+    *,
+    replace: bool = True,
+) -> DyntplFixtureLoadResult:
+    """Load or replace one template from ``{named_id}.json`` in installed apps."""
+    result = DyntplFixtureLoadResult()
+    target = f"{named_id}.json"
+    matches = [f for f in discover_dyntpl_fixture_files() if f.path.name == target]
+    if not matches:
+        result.errors.append(
+            f"No {target} found under dyntpl/ or fixtures/dyntpl/ in installed apps."
+        )
+        return result
+    if len(matches) > 1:
+        listing = ", ".join(f"{m.app_label}/{m.relative_path}" for m in matches)
+        result.errors.append(f"Multiple files named {target}: {listing}")
+        return result
+    fixture = matches[0]
+    prefix = f"{fixture.app_label}/{fixture.relative_path}"
+    try:
+        raw = fixture.path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        payload = normalize_fixture_payload(data)
+        imported = import_payload(payload, replace=replace)
+        result.created += imported["created"]
+        result.updated += imported["updated"]
+        result.files_loaded += 1
+        for err in imported["errors"]:
+            result.errors.append(f"{prefix}: {err}")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        result.errors.append(f"{prefix}: {exc}")
+    return result
+
+
 def load_dyntpl_fixtures(
     *,
     replace: bool = True,

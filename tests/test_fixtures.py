@@ -17,11 +17,11 @@ from tests.app.models import Product
 def test_discover_dyntpl_fixture_files_in_installed_apps():
     files = discover_dyntpl_fixture_files(app_labels=["app"])
     paths = [f.relative_path for f in files]
-    assert "dyntpl/product-greeting.json" in paths
-    assert "dyntpl/product-nested-child.json" in paths
-    assert "dyntpl/product-nested-parent.json" in paths
-    assert "dyntpl/product-dates.json" in paths
-    assert "dyntpl/product-contact-list.json" in paths
+    assert "dyntpl/fixture-greeting.json" in paths
+    assert "dyntpl/fixture-nested-child.json" in paths
+    assert "dyntpl/fixture-nested-parent.json" in paths
+    assert "dyntpl/fixture-dates.json" in paths
+    assert "dyntpl/fixture-contact-list.json" in paths
 
 
 @pytest.mark.django_db
